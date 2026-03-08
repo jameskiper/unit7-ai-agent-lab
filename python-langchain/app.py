@@ -32,7 +32,15 @@ class State(TypedDict):
 
 load_dotenv()
 
-
+# Planned workflow:
+# User input -> Researcher -> Writer -> Editor
+# The editor will either approve the result and end the workflow,
+# or send it back to the writer for revision.
+#
+# This uses:
+# - shared state to accumulate messages
+# - Command-based handoffs to choose the next node
+# - dynamic routing so the workflow can loop when needed
 async def main():
     """Run the multi-agent content creation workflow."""
     
@@ -55,7 +63,10 @@ async def main():
         base_url="https://models.github.ai/inference",
         api_key=os.getenv("GITHUB_TOKEN")
     )
-    
+        # Load prompts from your local filesystem
+    with open("templates/researcher.json", "r") as f:
+        researcher_data = json.load(f)
+        researcher_prompt = researcher_data.get("template", "You are a helpful research assistant.")
     # We'll add more here in the next steps
     
     print("\nOrchestration setup complete!")

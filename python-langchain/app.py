@@ -63,6 +63,21 @@ async def main():
         base_url="https://models.github.ai/inference",
         api_key=os.getenv("GITHUB_TOKEN")
     )
+        # Get Tavily API key from environment
+    tavily_api_key = os.getenv("TAVILY_API_KEY")
+    
+    # Create MCP client for Tavily
+    research_client = MultiServerMCPClient({
+        "tavily": {
+            "transport": "http",
+            "url": f"https://mcp.tavily.com/mcp/?tavilyApiKey={tavily_api_key}",
+        }
+    })
+    
+    # Get tools from the client (await because it's async)
+    researcher_tools = await research_client.get_tools()
+    
+    print(f"Research tools: {[tool.name for tool in researcher_tools]}")  
         # Load prompts from your local filesystem
     with open("templates/researcher.json", "r") as f:
         researcher_data = json.load(f)

@@ -46,7 +46,7 @@ load_dotenv()
 researcher_agent = None
 
 
-async def researcher_node(state: State) -> Command[Literal["writer", "__end__"]]:
+async def researcher_node(state: State) -> Command[Literal["__end__"]]:
     """Research node that hands off to writer."""
     print("\n" + "="*50)
     print("RESEARCHER NODE")
@@ -83,12 +83,13 @@ async def researcher_node(state: State) -> Command[Literal["writer", "__end__"]]
     
     return Command(
         update={"messages": response["messages"]},
-        goto="writer"
+        goto="_end_"
     )
 
 
 async def main():
     """Run the multi-agent content creation workflow."""
+    global researcher_agent
     
     # Check for required API keys
     if not os.getenv("GITHUB_TOKEN"):
@@ -101,15 +102,23 @@ async def main():
         print("Add TAVILY_API_KEY=your-key to a .env file")
         print("Get your API key from: https://app.tavily.com/")
         return
-    
-    # Initialize LLM
+        # Initialize LLM
     llm = ChatOpenAI(
         model="openai/gpt-4o-mini",
         temperature=0.7,
         base_url="https://models.github.ai/inference",
         api_key=os.getenv("GITHUB_TOKEN")
     )
-        # Get Tavily API key from environment
+
+    # Load prompts from your local filesystem
+    with open("templates/researcher.json", "r") as f:
+        researcher_data = json.load(f)
+        researcher_prompt = researcher_data.get(
+            "template",
+            "You are a helpful research assistant."
+        )
+
+    # Get Tavily API key from environment
     tavily_api_key = os.getenv("TAVILY_API_KEY")
     
     # Create MCP client for Tavily
@@ -120,18 +129,39 @@ async def main():
         }
     })
     
-    # Get tools from the client (await because it's async)
+    # Get tools from the client
     researcher_tools = await research_client.get_tools()
     
-    print(f"Research tools: {[tool.name for tool in researcher_tools]}")  
-        # Load prompts from your local filesystem
-    with open("templates/researcher.json", "r") as f:
-        researcher_data = json.load(f)
-        researcher_prompt = researcher_data.get("template", "You are a helpful research assistant.")
-    # We'll add more here in the next steps
+    print(f"Research tools: {[tool.name for tool in researcher_tools]}")
+    # Create researcher agent
+    researcher_agent = create_agent(
+        llm,
+        tools=researcher_tools,
+        system_prompt=researcher_prompt
+    )
+    # Build the Graph
+    builder = StateGraph(State)
+    builder.add_node("researcher", researcher_node)
     
-    print("\nOrchestration setup complete!")
+    # Set the entry point
+    builder.add_edge(START, "researcher")
+    graph = builder.compile()
+        
+        # Run the workflow
+        
+    print("\n" + "="*50)
+    print("Starting Multi-Agent Content Creation Workflow")
+    print("="*50 + "\n")
 
+    user_input = input("Enter the topic that you would like to research: ")
+    initial_message = HumanMessage(content=user_input)
+    result = await graph.ainvoke({"messages": [initial_message]})
 
+    print("\n" + "="*50)
+    print("Workflow Complete")
+    print("="*50 + "\n")
+    print("Final Output:")
+    print(result["messages"][-1].content if result["messages"] else "No output")
+    
 if __name__ == "__main__":
     asyncio.run(main())

@@ -41,6 +41,52 @@ load_dotenv()
 # - shared state to accumulate messages
 # - Command-based handoffs to choose the next node
 # - dynamic routing so the workflow can loop when needed
+
+# Global variable for the researcher agent (will be set in main)
+researcher_agent = None
+
+
+async def researcher_node(state: State) -> Command[Literal["writer", "__end__"]]:
+    """Research node that hands off to writer."""
+    print("\n" + "="*50)
+    print("RESEARCHER NODE")
+    print("="*50)
+    
+    # Use the global researcher agent created in main()
+    response = await researcher_agent.ainvoke({"messages": state["messages"]})
+    
+    # Debug: Print search results and tool usage
+    print("\n--- Research Results ---")
+    for msg in response["messages"]:
+        # Check for tool calls (AI messages with tool_calls)
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                print(f"\nTool Called: {tool_call.get('name', 'Unknown')}")
+                print(f"Arguments: {tool_call.get('args', {})}")
+        
+        # Check for tool responses (ToolMessage)
+        if msg.type == "tool":
+            print(f"\nTool Response from: {getattr(msg, 'name', 'Unknown Tool')}")
+            content_preview = (
+                str(msg.content)[:500] + "..."
+                if len(str(msg.content)) > 500
+                else str(msg.content)
+            )
+            print(f"Content: {content_preview}")
+        
+        # Print AI responses
+        if msg.type == "ai" and not (hasattr(msg, "tool_calls") and msg.tool_calls):
+            print("\nResearcher Response:")
+            print(f"{msg.content}")
+    
+    print("\n" + "="*50 + "\n")
+    
+    return Command(
+        update={"messages": response["messages"]},
+        goto="writer"
+    )
+
+
 async def main():
     """Run the multi-agent content creation workflow."""
     

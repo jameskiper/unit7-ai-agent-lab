@@ -27,8 +27,85 @@ from langgraph.types import Command
 # This allows all agents in the workflow to share memory and build
 # on each other's outputs safely.
 
+# Shared state for the workflow graph.
+# This defines the data that all agents in the workflow can access.
+#
+# messages:
+#   - Stores the full conversation history between agents.
+#   - Includes user input, AI responses, and tool outputs.
+#   - The add_messages annotation ensures new messages are appended
+#     instead of overwriting the previous conversation.
+#
+# latest_draft:
+#   - Stores the most recent article created by the writer agent.
+#   - This allows the workflow to print the final article at the end
+#     instead of the editor's approval message.
+#   - Each time the writer runs (including revisions), this value is updated
+#     with the newest version of the article.
+# ================================================================
+# Multi-Agent Content Creation Workflow
+# ================================================================
+#
+# This program demonstrates a multi-agent AI workflow using LangGraph.
+# Each agent performs a specialized task and passes the result to the
+# next agent in the pipeline.
+#
+# Workflow Pipeline:
+#
+# User Input
+#      │
+#      ▼
+# Researcher Agent
+#   - Uses Tavily search tools via MCP
+#   - Gathers external information
+#   - Summarizes key findings
+#
+#      │ Command(goto="writer")
+#      ▼
+# Writer Agent
+#   - Converts research into a structured article
+#   - Formats headings and explanations
+#   - Saves the article into `latest_draft`
+#
+#      │ Command(goto="fact_checker")
+#      ▼
+# Fact-Checker Agent
+#   - Reviews the writer’s content for factual accuracy
+#   - If issues are found → returns "REVISE" and sends the workflow
+#     back to the writer for correction
+#
+#      │ Command(goto="editor")
+#      ▼
+# Editor Agent
+#   - Reviews writing quality, clarity, and structure
+#   - If improvements are needed → returns "REVISE" and sends the
+#     workflow back to the writer
+#   - If the article is acceptable → workflow ends
+#
+#      │
+#      ▼
+# Final Output
+#   - The system prints `latest_draft`, which stores the most recent
+#     article written by the writer agent.
+#   - This ensures the program outputs the finished article instead
+#     of the editor's approval message.
+#
+# Key Concepts Demonstrated:
+#   • Multi-agent orchestration
+#   • LangGraph state sharing
+#   • Tool usage via MCP (Tavily search)
+#   • Conditional routing between agents
+#   • Revision loops using "REVISE"
+#   • Token/context management by storing only final outputs
+#
+# This architecture simulates a real editorial pipeline:
+# Researcher → Writer → Fact-Checker → Editor
+# ================================================================
+
 class State(TypedDict):
     messages: Annotated[list, add_messages]
+    latest_draft: str
+
 
 load_dotenv()
 
@@ -47,6 +124,7 @@ load_dotenv()
 # Global variables for agents (will be set in main)
 researcher_agent = None
 writer_agent = None
+fact_checker_agent = None
 editor_agent = None
 
 
@@ -90,21 +168,55 @@ async def researcher_node(state: State) -> Command[Literal["writer", "__end__"]]
         goto="writer"
     )
 
-async def writer_node(state: State) -> Command[Literal["editor", "__end__"]]:
-    """Writer node that hands off to editor."""
+
+async def writer_node(state: State) -> Command[Literal["fact_checker", "__end__"]]:
+    """Writer node that hands off to fact-checker."""
     print("\n" + "="*50)
     print("WRITER NODE")
     print("="*50)
     
     response = await writer_agent.ainvoke({"messages": state["messages"]})
     
+    # Save the writer's most recent article in latest_draft
+    # so the workflow can print the finished article at the end.
     # Print the written content
     final_message = response["messages"][-1]
     print(f"\nWriter Output:")
     print(f"{final_message.content}")
     print("\n" + "="*50 + "\n")
-    
-    # Native handoff: explicitly tell the graph to move to 'editor'
+
+    # Save the latest writer draft in state and hand off to fact-checker
+    return Command(
+        update={
+            "messages": state["messages"] + [final_message],
+            "latest_draft": final_message.content
+        },
+        goto="fact_checker"
+    )
+
+
+async def fact_checker_node(state: State) -> Command[Literal["editor", "writer", "__end__"]]:
+    """Fact-checker node that reviews writer output before editor."""
+    print("\n" + "="*50)
+    print("FACT-CHECKER NODE")
+    print("="*50)
+
+    response = await fact_checker_agent.ainvoke({"messages": state["messages"]})
+
+    final_message = response["messages"][-1]
+    print("\nFact-Checker Output:")
+    print(final_message.content)
+
+    if "REVISE" in str(final_message.content):
+        print("\n⚠️ Fact-checker requested REVISION - routing back to writer")
+        print("="*50 + "\n")
+        return Command(
+            update={"messages": response["messages"]},
+            goto="writer"
+        )
+
+    print("\n✓ Fact-check passed - routing to editor")
+    print("="*50 + "\n")
     return Command(
         update={"messages": response["messages"]},
         goto="editor"
@@ -143,7 +255,7 @@ async def editor_node(state: State) -> Command[Literal["writer", "__end__"]]:
     
 async def main():
     """Run the multi-agent content creation workflow."""
-    global researcher_agent, writer_agent, editor_agent
+    global researcher_agent, writer_agent, fact_checker_agent, editor_agent
     # ... rest of the code
     
     # Check for required API keys
@@ -157,7 +269,7 @@ async def main():
         print("Add TAVILY_API_KEY=your-key to a .env file")
         print("Get your API key from: https://app.tavily.com/")
         return
-        # Initialize LLM
+    # Initialize LLM
     llm = ChatOpenAI(
         model="openai/gpt-4o-mini",
         temperature=0.7,
@@ -186,7 +298,14 @@ async def main():
             "template",
             "You are a helpful editing assistant."
         )
-        
+    
+    with open("templates/fact_checker.json", "r") as f:
+        fact_checker_data = json.load(f)
+        fact_checker_prompt = fact_checker_data.get(
+            "template",
+            "You are a helpful fact checking assistant."
+        )
+               
     # Get Tavily API key from environment
     tavily_api_key = os.getenv("TAVILY_API_KEY")
     
@@ -209,7 +328,7 @@ async def main():
         tools=researcher_tools,
         system_prompt=researcher_prompt
     )
-        # Writer and editor don't need tools
+    # Writer and editor don't need tools
     writer_agent = create_agent(
         llm, 
         tools=[],
@@ -222,17 +341,24 @@ async def main():
         system_prompt=editor_prompt
     )
     
-       # Build the Graph without manual edges (Edgeless Handoff)
+    fact_checker_agent = create_agent(
+        llm,
+        tools=[],
+        system_prompt=fact_checker_prompt
+    )
+        
+    # Build the Graph without manual edges (Edgeless Handoff)
     builder = StateGraph(State)
     builder.add_node("researcher", researcher_node)
     builder.add_node("writer", writer_node)
+    builder.add_node("fact_checker", fact_checker_node)
     builder.add_node("editor", editor_node)
     
     # Only need to set the entry point
     builder.add_edge(START, "researcher")
     graph = builder.compile()
         
-        # Run the workflow
+    # Run the workflow
         
     print("\n" + "="*50)
     print("Starting Multi-Agent Content Creation Workflow")
@@ -242,11 +368,23 @@ async def main():
     initial_message = HumanMessage(content=user_input)
     result = await graph.ainvoke({"messages": [initial_message]})
 
+    # Print the final result of the workflow.
+    #
+    # Instead of printing the last message in the conversation history,
+    # we print "latest_draft", which stores the most recent article
+    # produced by the writer agent.
+    #
+    # The editor is the final node in the workflow, so the last message
+    # would normally be the editor's approval or revision feedback.
+    # By storing the writer's article in "latest_draft", we can display
+    # the finished content instead of the editor's comments.
+
+
     print("\n" + "="*50)
     print("Workflow Complete")
     print("="*50 + "\n")
     print("Final Output:")
-    print(result["messages"][-1].content if result["messages"] else "No output")
+    print(result.get("latest_draft", "No draft available"))
     
 if __name__ == "__main__":
     asyncio.run(main())

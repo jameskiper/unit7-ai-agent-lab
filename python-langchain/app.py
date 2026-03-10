@@ -403,29 +403,50 @@ async def main():
 
     user_input = input("Enter the topic that you would like to research: ")
     initial_message = HumanMessage(content=user_input)
-    result = await graph.ainvoke({
-    "messages": [initial_message],
-    "latest_draft": "",
-    "revision_count": 0
-})
+    
+    
+    final_state = {
+        "messages": [initial_message],
+        "latest_draft": "",
+        "revision_count": 0
+    }
 
+    async for chunk in graph.astream(
+        final_state,
+        stream_mode="updates"
+    ):
+   
+        print("\n--- STREAM UPDATE ---")
+        
+        for node_name, node_update in chunk.items():
+            print(f"✓ Agent completed: {node_name}")
+            #print(f"Updated keys: {list(node_update.keys())}")
+
+             
+            # Merge node updates into final_state
+            if isinstance(node_update, dict):
+                final_state.update(node_update)
+    
+    
+
+   # result = await graph.ainvoke({
+    #"messages": [initial_message],
+    #"latest_draft": "",
+    #"revision_count": 0
     # Print the final result of the workflow.
-    #
     # Instead of printing the last message in the conversation history,
     # we print "latest_draft", which stores the most recent article
     # produced by the writer agent.
-    #
     # The editor is the final node in the workflow, so the last message
     # would normally be the editor's approval or revision feedback.
     # By storing the writer's article in "latest_draft", we can display
     # the finished content instead of the editor's comments.
 
-
     print("\n" + "="*50)
     print("Workflow Complete")
     print("="*50 + "\n")
     print("Final Output:")
-    print(result.get("latest_draft", "No draft available"))
+    print(final_state.get("latest_draft", "No draft available"))
     
 if __name__ == "__main__":
     asyncio.run(main())

@@ -184,13 +184,10 @@ async def writer_node(state: State) -> Command[Literal["fact_checker", "__end__"
     print("WRITER NODE")
     print("="*50)
     
-    # Only pass the researcher's final response to the writer
-    final_message = state["messages"][-1]
-    response = await writer_agent.ainvoke({"messages": [final_message]})
+    # this Only pass the researcher's final response to the writer
+    # Pass the full workflow message history so the writer keeps the original topic in focus
+    response = await writer_agent.ainvoke({"messages": state["messages"]})
     
-    # Save the writer's most recent article in latest_draft
-    # so the workflow can print the finished article at the end.
-    # Print the written content
     final_message = response["messages"][-1]
     print(f"\nWriter Output:")
     print(f"{final_message.content}")
@@ -346,6 +343,11 @@ async def main():
         "tavily": {
             "transport": "http",
             "url": f"https://mcp.tavily.com/mcp/?tavilyApiKey={tavily_api_key}",
+        },
+        "wikipedia": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "wikipedia-mcp-server"],
         }
     })
     

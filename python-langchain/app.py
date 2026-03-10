@@ -102,9 +102,18 @@ from langgraph.types import Command
 # Researcher → Writer → Fact-Checker → Editor
 # ================================================================
 
+
+
+# revision_count:
+#   - Tracks how many times the workflow has been sent back for revision.
+#   - Used to prevent infinite loops between the writer and editor.
+#   - If the count reaches the maximum allowed revisions, the workflow ends.
+
+
 class State(TypedDict):
     messages: Annotated[list, add_messages]
     latest_draft: str
+    revision_count: int
 
 
 load_dotenv()
@@ -134,8 +143,8 @@ async def researcher_node(state: State) -> Command[Literal["writer", "__end__"]]
     print("RESEARCHER NODE")
     print("="*50)
     
-    # Use the global researcher agent created in main()
-    response = await researcher_agent.ainvoke({"messages": state["messages"]})
+    # Only pass the initial user message to the researcher
+    response = await researcher_agent.ainvoke({"messages": [state["messages"][0]]})
     
     # Debug: Print search results and tool usage
     print("\n--- Research Results ---")
@@ -175,7 +184,9 @@ async def writer_node(state: State) -> Command[Literal["fact_checker", "__end__"
     print("WRITER NODE")
     print("="*50)
     
-    response = await writer_agent.ainvoke({"messages": state["messages"]})
+    # Only pass the researcher's final response to the writer
+    final_message = state["messages"][-1]
+    response = await writer_agent.ainvoke({"messages": [final_message]})
     
     # Save the writer's most recent article in latest_draft
     # so the workflow can print the finished article at the end.
@@ -201,7 +212,9 @@ async def fact_checker_node(state: State) -> Command[Literal["editor", "writer",
     print("FACT-CHECKER NODE")
     print("="*50)
 
-    response = await fact_checker_agent.ainvoke({"messages": state["messages"]})
+    # Only pass the writer's response to the fact-checker
+    final_message = state["messages"][-1]
+    response = await fact_checker_agent.ainvoke({"messages": [final_message]})
 
     final_message = response["messages"][-1]
     print("\nFact-Checker Output:")
@@ -211,14 +224,14 @@ async def fact_checker_node(state: State) -> Command[Literal["editor", "writer",
         print("\n⚠️ Fact-checker requested REVISION - routing back to writer")
         print("="*50 + "\n")
         return Command(
-            update={"messages": response["messages"]},
+            update={"messages": state["messages"] + [final_message]},
             goto="writer"
         )
 
     print("\n✓ Fact-check passed - routing to editor")
     print("="*50 + "\n")
     return Command(
-        update={"messages": response["messages"]},
+        update={"messages": state["messages"] + [final_message]},
         goto="editor"
     )
     
@@ -228,7 +241,9 @@ async def editor_node(state: State) -> Command[Literal["writer", "__end__"]]:
     print("EDITOR NODE")
     print("="*50)
     
-    response = await editor_agent.ainvoke({"messages": state["messages"]})
+    # Only pass the fact-checker's response to the editor
+    final_message = state["messages"][-1]
+    response = await editor_agent.ainvoke({"messages": [final_message]})
     
     # Debug: Print editor feedback
     final_message = response["messages"][-1]
@@ -236,22 +251,39 @@ async def editor_node(state: State) -> Command[Literal["writer", "__end__"]]:
     print(f"{final_message.content}")
     
     # Example logic: if editor finds an error, hand back to writer
+    current_revisions = state.get("revision_count", 0)
+
     if "REVISE" in str(final_message.content):
+        if current_revisions >= 2:
+            print("\n⚠️ Maximum revision limit reached - ending workflow")
+            print("="*50 + "\n")
+            return Command(
+                update={
+                    "messages": state["messages"] + [final_message],
+                    "revision_count": current_revisions
+                },
+                goto="__end__"
+            )
+
         print("\n⚠️  Editor requested REVISION - routing back to writer")
         print("="*50 + "\n")
         return Command(
-            update={"messages": response["messages"]},
+            update={
+                "messages": state["messages"] + [final_message],
+                "revision_count": current_revisions + 1
+            },
             goto="writer"
         )
     
     print("\n✓ Editor approved - workflow complete")
     print("="*50 + "\n")
-    
     return Command(
-        update={"messages": response["messages"]},
+        update={
+            "messages": state["messages"] + [final_message],
+            "revision_count": current_revisions
+        },
         goto="__end__"
-    )    
-    
+    )
     
 async def main():
     """Run the multi-agent content creation workflow."""
@@ -366,7 +398,11 @@ async def main():
 
     user_input = input("Enter the topic that you would like to research: ")
     initial_message = HumanMessage(content=user_input)
-    result = await graph.ainvoke({"messages": [initial_message]})
+    result = await graph.ainvoke({
+    "messages": [initial_message],
+    "latest_draft": "",
+    "revision_count": 0
+})
 
     # Print the final result of the workflow.
     #
